@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'ble_device_model.dart';
+import 'package:flutter/foundation.dart';
 
 // Şu an için sadece tarama ve bağlanma sorumluluğu var.
 // LED/röle kontrolü ve sensör verisi ileride eklenecek.
 class BleService {
   final List<BleDeviceModel> _foundDevices = [];
   BluetoothDevice? _connectedDevice;
+  BluetoothCharacteristic? _writeCharacteristic;
 
   final _devicesController = StreamController<List<BleDeviceModel>>.broadcast();
   final _connectionController = StreamController<bool>.broadcast();
@@ -57,6 +59,18 @@ class BleService {
   Future<void> connect(BleDeviceModel model) async {
     await model.device.connect();
     _connectedDevice = model.device;
+    final services = await model.device.discoverServices();
+    for (var service in services) {
+      debugPrint('Servis bulundu: ${service.uuid}');
+      for (var c in service.characteristics) {
+        if (c.properties.write) {
+          _writeCharacteristic = c;
+        }
+        debugPrint(
+          '  -> Karakteristik: ${c.uuid} (write: ${c.properties.write}, notify: ${c.properties.notify})',
+        );
+      }
+    }
 
     model.device.connectionState.listen((state) {
       if (state == BluetoothConnectionState.disconnected) {
@@ -66,6 +80,22 @@ class BleService {
     });
 
     _connectionController.add(true);
+  }
+
+  // LED ve Röle için byte komut tablosu — ESP32 tarafı bu byte'lara göre çalışacak
+  static const int redLedOn = 0x11;
+  static const int redLedOff = 0x10;
+  static const int greenLedOn = 0x21;
+  static const int greenLedOff = 0x20;
+  static const int blueLedOn = 0x31;
+  static const int blueLedOff = 0x30;
+  static const int relayOn = 0x41;
+  static const int relayOff = 0x40;
+
+  // Verilen byte komutunu ESP32'ye gönderir
+  Future<void> sendCommand(int command) async {
+    if (_writeCharacteristic == null) return;
+    await _writeCharacteristic!.write([command]);
   }
 
   Future<void> disconnect() async {

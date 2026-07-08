@@ -1,5 +1,7 @@
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
+// Taramada bulunan tek bir BLE cihazını temsil eder.
+// flutter_blue_plus'ın ham ScanResult'ını UI'ın anlayacağı basit bir modele çevirir.
 class BleDeviceModel {
   final String id; // Cihazın MAC adresi (remoteId) — benzersiz kimlik olarak kullanılır
   final String name; // Cihazın yayınladığı isim, listede gösterilir
