@@ -8,6 +8,7 @@ import 'widgets/scan_button.dart';
 import 'widgets/device_list.dart';
 import 'widgets/connected_card.dart';
 import 'widgets/led_relay_card.dart';
+import 'widgets/sensor_card.dart';
 
 // Ana ekran: cihaz tarama ve bağlanma akışını yönetir.
 // LED/röle kontrolü ve sensör verisi kısmı henüz eklenmedi.
@@ -24,6 +25,7 @@ class _HomeScreenState extends State<HomeScreen> {
   List<BleDeviceModel> _devices = [];
   bool _isScanning = false;
   bool _isConnected = false;
+  int? _distance;
   String _connectedName = '';
 
   bool _redLed = false;
@@ -62,6 +64,10 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       });
     });
+    _bleService.sensorStream.listen((distance) {
+  setState(() => _distance = distance);
+});
+
   }
 
   // Tarama butonuna basılınca çağrılır
@@ -136,21 +142,31 @@ class _HomeScreenState extends State<HomeScreen> {
                   relay: _relay,
                   onRedChanged: (v) {
                     setState(() => _redLed = v);
-                    _bleService.sendCommand(v ? BleService.redLedOn : BleService.redLedOff);
+                    _bleService.sendCommand(
+                      v ? BleService.redLedOn : BleService.redLedOff,
+                    );
                   },
                   onGreenChanged: (v) {
                     setState(() => _greenLed = v);
-                    _bleService.sendCommand(v ? BleService.greenLedOn : BleService.greenLedOff);
+                    _bleService.sendCommand(
+                      v ? BleService.greenLedOn : BleService.greenLedOff,
+                    );
                   },
                   onBlueChanged: (v) {
                     setState(() => _blueLed = v);
-                    _bleService.sendCommand(v ? BleService.blueLedOn : BleService.blueLedOff);
+                    _bleService.sendCommand(
+                      v ? BleService.blueLedOn : BleService.blueLedOff,
+                    );
                   },
                   onRelayChanged: (v) {
                     setState(() => _relay = v);
-                    _bleService.sendCommand(v ? BleService.relayOn : BleService.relayOff);
+                    _bleService.sendCommand(
+                      v ? BleService.relayOn : BleService.relayOff,
+                    );
                   },
                 ),
+                const SizedBox(height: 8),
+                SensorCard(distanceCm: _distance),
               ],
             ],
           ),

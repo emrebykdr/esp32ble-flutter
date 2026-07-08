@@ -12,9 +12,11 @@ class BleService {
 
   final _devicesController = StreamController<List<BleDeviceModel>>.broadcast();
   final _connectionController = StreamController<bool>.broadcast();
+  final _sensorController = StreamController<int>.broadcast();
 
   Stream<List<BleDeviceModel>> get devicesStream => _devicesController.stream;
   Stream<bool> get connectionStream => _connectionController.stream;
+  Stream<int> get sensorStream => _sensorController.stream;
 
   bool get isConnected => _connectedDevice != null;
 
@@ -65,6 +67,17 @@ class BleService {
       for (var c in service.characteristics) {
         if (c.properties.write) {
           _writeCharacteristic = c;
+        } else if (c.properties.notify) {
+          await c.setNotifyValue(true);
+          c.lastValueStream.listen((value) {
+            if (value.isNotEmpty) {
+              final str = String.fromCharCodes(value);
+              final distance = int.tryParse(str);
+              if (distance != null) {
+                _sensorController.add(distance);
+              }
+            }
+          });
         }
         debugPrint(
           '  -> Karakteristik: ${c.uuid} (write: ${c.properties.write}, notify: ${c.properties.notify})',
@@ -107,5 +120,6 @@ class BleService {
   void dispose() {
     _devicesController.close();
     _connectionController.close();
+    _sensorController.close();
   }
 }
