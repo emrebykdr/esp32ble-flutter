@@ -94,6 +94,12 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _disconnect() async {
+    // Bağlantı kesilmeden önce açık LED/röle varsa kapat, aksi halde donanımda yanık kalır
+    if (_redLed) await _bleService.sendCommand(BleService.redLedOff);
+    if (_greenLed) await _bleService.sendCommand(BleService.greenLedOff);
+    if (_blueLed) await _bleService.sendCommand(BleService.blueLedOff);
+    if (_relay) await _bleService.sendCommand(BleService.relayOff);
+
     await _bleService.disconnect();
     setState(() => _connectedName = '');
   }
