@@ -74,10 +74,23 @@ class _LedRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
         children: [
-          Container(
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 250),
             width: 8,
             height: 8,
-            decoration: BoxDecoration(shape: BoxShape.circle, color: dotColor),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: dotColor,
+              boxShadow: value
+                  ? [
+                      BoxShadow(
+                        color: dotColor.withValues(alpha: 0.7),
+                        blurRadius: 8,
+                        spreadRadius: 2,
+                      ),
+                    ]
+                  : null,
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -86,7 +99,12 @@ class _LedRow extends StatelessWidget {
               style: const TextStyle(color: AppColors.textPrimary, fontSize: 14),
             ),
           ),
-          Switch(value: value, onChanged: onChanged),
+          Switch(
+            value: value,
+            onChanged: onChanged,
+            activeThumbColor: dotColor,
+            activeTrackColor: dotColor.withValues(alpha: 0.3),
+          ),
         ],
       ),
     );

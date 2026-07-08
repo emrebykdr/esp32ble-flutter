@@ -14,8 +14,11 @@ class BleService {
   final _connectionController = StreamController<bool>.broadcast();
   final _sensorController = StreamController<int>.broadcast();
 
+  // Taranan cihaz listesi UI'a bu stream üzerinden akar
   Stream<List<BleDeviceModel>> get devicesStream => _devicesController.stream;
+  // Bağlantı durumu (true/false) UI'a bu stream üzerinden akar
   Stream<bool> get connectionStream => _connectionController.stream;
+  // ESP32'den notify ile gelen mesafe verisi (cm) bu stream üzerinden akar
   Stream<int> get sensorStream => _sensorController.stream;
 
   bool get isConnected => _connectedDevice != null;
@@ -47,6 +50,7 @@ class BleService {
               device: result.device,
             ),
           );
+          // Yeni kopya gönder, aksi halde ValueNotifier/StreamBuilder değişikliği fark etmez
           _devicesController.add(List.from(_foundDevices));
         }
       }
@@ -66,11 +70,14 @@ class BleService {
       debugPrint('Servis bulundu: ${service.uuid}');
       for (var c in service.characteristics) {
         if (c.properties.write) {
+          // LED/röle komutları bu karakteristiğe yazılacak
           _writeCharacteristic = c;
         } else if (c.properties.notify) {
+          // ESP32 mesafe verisini bu karakteristikten notify ile gönderiyor
           await c.setNotifyValue(true);
           c.lastValueStream.listen((value) {
             if (value.isNotEmpty) {
+              // ESP32 veriyi string olarak gönderiyor (örn. "23"), int'e çeviriyoruz
               final str = String.fromCharCodes(value);
               final distance = int.tryParse(str);
               if (distance != null) {
@@ -85,6 +92,7 @@ class BleService {
       }
     }
 
+    // Cihaz beklenmedik şekilde koparsa (menzil dışı, pil vs.) durumu güncelle
     model.device.connectionState.listen((state) {
       if (state == BluetoothConnectionState.disconnected) {
         _connectedDevice = null;
@@ -111,12 +119,14 @@ class BleService {
     await _writeCharacteristic!.write([command]);
   }
 
+  // Kullanıcı manuel bağlantıyı keser
   Future<void> disconnect() async {
     await _connectedDevice?.disconnect();
     _connectedDevice = null;
     _connectionController.add(false);
   }
 
+  // Servis yok edilirken stream'leri kapat, aksi halde memory leak olur
   void dispose() {
     _devicesController.close();
     _connectionController.close();
