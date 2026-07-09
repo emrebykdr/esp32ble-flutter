@@ -23,10 +23,13 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final BleService _bleService = BleService();
 
+  static const int _maxHistoryLength = 40;
+
   List<BleDeviceModel> _devices = [];
   bool _isScanning = false;
   bool _isConnected = false;
   int? _distance;
+  final List<int> _distanceHistory = [];
   String _connectedName = '';
 
   bool _redLed = false;
@@ -63,13 +66,20 @@ class _HomeScreenState extends State<HomeScreen> {
           _greenLed = false;
           _blueLed = false;
           _relay = false;
+          _distance = null;
+          _distanceHistory.clear();
         }
       });
     });
     _bleService.sensorStream.listen((distance) {
-  setState(() => _distance = distance);
-});
-
+      setState(() {
+        _distance = distance;
+        _distanceHistory.add(distance);
+        if (_distanceHistory.length > _maxHistoryLength) {
+          _distanceHistory.removeAt(0);
+        }
+      });
+    });
   }
 
   // Tarama butonuna basılınca çağrılır
@@ -174,7 +184,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   },
                 ),
                 const SizedBox(height: 8),
-                SensorCard(distanceCm: _distance),
+                SensorCard(distanceCm: _distance, history: _distanceHistory),
               ],
             ],
           ),
