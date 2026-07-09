@@ -9,6 +9,7 @@ class BleService {
   final List<BleDeviceModel> _foundDevices = [];
   BluetoothDevice? _connectedDevice;
   BluetoothCharacteristic? _writeCharacteristic;
+  Timer? _sensorPollTimer;
 
   final _devicesController = StreamController<List<BleDeviceModel>>.broadcast();
   final _connectionController = StreamController<bool>.broadcast();
@@ -23,15 +24,24 @@ class BleService {
 
   bool get isConnected => _connectedDevice != null;
 
+  // Web Bluetooth, discoverServices'ten önce hangi custom servise erişileceğini
+  // bilmek zorunda (optionalServices), aksi halde SecurityError atar.
+  static final Guid _serviceUuid = Guid('4fafc201-1fb5-459e-8fcc-c5c9c331914b');
+
   // 10 saniye boyunca çevredeki BLE cihazlarını tarar
   Future<void> startScan() async {
-    if (await FlutterBluePlus.adapterState.first != BluetoothAdapterState.on) {
-      await FlutterBluePlus.turnOn();
+    if (!kIsWeb) {
+      if (await FlutterBluePlus.adapterState.first != BluetoothAdapterState.on) {
+        await FlutterBluePlus.turnOn();
+      }
     }
 
     _foundDevices.clear();
 
-    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 10));
+    await FlutterBluePlus.startScan(
+      timeout: const Duration(seconds: 10),
+      webOptionalServices: [_serviceUuid],
+    );
 
     FlutterBluePlus.scanResults.listen((results) {
       for (ScanResult result in results) {
@@ -65,6 +75,14 @@ class BleService {
   Future<void> connect(BleDeviceModel model) async {
     await model.device.connect();
     _connectedDevice = model.device;
+
+    // Windows'ta Chrome'un Web Bluetooth (WinRT) katmanı, bağlantı hemen sonrası
+    // GATT işlemlerinde (özellikle notify descriptor yazımı) zaman zaman takılıyor;
+    // kısa bir bekleme GATT session'ının tam kurulmasına fırsat veriyor.
+    if (kIsWeb) {
+      await Future.delayed(const Duration(milliseconds: 600));
+    }
+
     final services = await model.device.discoverServices();
     for (var service in services) {
       debugPrint('Servis bulundu: ${service.uuid}');
@@ -73,18 +91,28 @@ class BleService {
           // LED/röle komutları bu karakteristiğe yazılacak
           _writeCharacteristic = c;
         } else if (c.properties.notify) {
-          // ESP32 mesafe verisini bu karakteristikten notify ile gönderiyor
-          await c.setNotifyValue(true);
-          c.lastValueStream.listen((value) {
-            if (value.isNotEmpty) {
-              // ESP32 veriyi string olarak gönderiyor (örn. "23"), int'e çeviriyoruz
-              final str = String.fromCharCodes(value);
-              final distance = int.tryParse(str);
-              if (distance != null) {
-                _sensorController.add(distance);
-              }
-            }
-          });
+          // ESP32 mesafe verisini bu karakteristikten notify ile gönderiyor.
+          if (kIsWeb) {
+            // Windows Chrome'da startNotifications() (bilinen Chromium/WinRT bug'ı)
+            // bu karakteristikte hep timeout veriyor; readValue() ise sorunsuz çalışıyor
+            // (chrome://bluetooth-internals ile doğrulandı). Push yerine periyodik
+            // okuma (polling) ile aynı bozuk API yolunu tamamen atlıyoruz.
+            _sensorPollTimer?.cancel();
+            _sensorPollTimer = Timer.periodic(
+              const Duration(milliseconds: 500),
+              (_) async {
+                try {
+                  final value = await c.read();
+                  _handleSensorValue(value);
+                } catch (e) {
+                  debugPrint('Sensor read hatasi: $e');
+                }
+              },
+            );
+          } else {
+            await _enableNotifyWithRetry(c);
+            c.lastValueStream.listen(_handleSensorValue);
+          }
         }
         debugPrint(
           '  -> Karakteristik: ${c.uuid} (write: ${c.properties.write}, notify: ${c.properties.notify})',
@@ -101,6 +129,35 @@ class BleService {
     });
 
     _connectionController.add(true);
+  }
+
+  // ESP32'den gelen ham byte'ı (string "23" gibi) int mesafeye çevirip stream'e ekler
+  void _handleSensorValue(List<int> value) {
+    if (value.isNotEmpty) {
+      final str = String.fromCharCodes(value);
+      final distance = int.tryParse(str);
+      if (distance != null) {
+        _sensorController.add(distance);
+      }
+    }
+  }
+
+  // Windows Chrome'da startNotifications() ilk denemede timeout verebiliyor,
+  // birkaç kez tekrar deneyip geçmesini bekliyoruz.
+  Future<void> _enableNotifyWithRetry(
+    BluetoothCharacteristic c, {
+    int maxAttempts = 3,
+  }) async {
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await c.setNotifyValue(true);
+        return;
+      } catch (e) {
+        debugPrint('setNotifyValue deneme $attempt basarisiz: $e');
+        if (attempt == maxAttempts) rethrow;
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+    }
   }
 
   // LED ve Röle için byte komut tablosu — ESP32 tarafı bu byte'lara göre çalışacak
@@ -121,6 +178,8 @@ class BleService {
 
   // Kullanıcı manuel bağlantıyı keser
   Future<void> disconnect() async {
+    _sensorPollTimer?.cancel();
+    _sensorPollTimer = null;
     await _connectedDevice?.disconnect();
     _connectedDevice = null;
     _connectionController.add(false);
@@ -128,6 +187,7 @@ class BleService {
 
   // Servis yok edilirken stream'leri kapat, aksi halde memory leak olur
   void dispose() {
+    _sensorPollTimer?.cancel();
     _devicesController.close();
     _connectionController.close();
     _sensorController.close();

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'ble_service.dart';
@@ -42,6 +43,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Android BLE için gerekli izinleri ister
   Future<void> _requestPermissions() async {
+    if (kIsWeb) return;
     await Permission.bluetoothScan.request();
     await Permission.bluetoothConnect.request();
     await Permission.locationWhenInUse.request();

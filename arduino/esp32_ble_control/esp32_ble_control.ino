@@ -155,11 +155,14 @@ void setup() {
   );
   pCommandChar->setCallbacks(new CommandCallbacks());
 
+  // READ eklendi: web tarafı startNotifications() yerine periyodik readValue()
+  // ile polling yapıyor (Windows Chrome'daki startNotifications() bug'ı yüzünden).
   pSensorChar = pService->createCharacteristic(
     SENSOR_CHAR_UUID,
-    BLECharacteristic::PROPERTY_NOTIFY
+    BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ
   );
   pSensorChar->addDescriptor(new BLE2902());
+  pSensorChar->setValue("0");
 
   pService->start();
 
