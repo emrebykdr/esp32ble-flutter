@@ -28,10 +28,18 @@
 #define CMD_RELAY_OFF     0x40
 #define CMD_RELAY_ON      0x41
 
+// Sensör ölçüm periyodu (ms)
+#define SENSOR_PERIOD_MS  500
+
 BLEServer* pServer = nullptr;
 BLECharacteristic* pSensorChar = nullptr;
-bool deviceConnected = false;
-unsigned long lastSensorSend = 0;
+
+// Çekirdekler arası paylaşılan durum bayrakları
+volatile bool deviceConnected = false;
+volatile bool needAdvertise = false;
+
+// Core 1 (sensör) -> Core 0 (BLE notify) veri kuyruğu
+QueueHandle_t sensorQueue = nullptr;
 
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* server) override {
@@ -39,7 +47,9 @@ class ServerCallbacks : public BLEServerCallbacks {
   }
   void onDisconnect(BLEServer* server) override {
     deviceConnected = false;
-    server->startAdvertising(); // bağlantı kopunca tekrar keşfedilebilir olsun
+    // Advertising'i callback içinde hemen başlatmak yerine flag ile
+    // notifyTask'a devrediyoruz; stack henüz hazır değilken çağrılmasını önler.
+    needAdvertise = true;
   }
 };
 
@@ -48,6 +58,8 @@ class CommandCallbacks : public BLECharacteristicCallbacks {
     if (c->getLength() == 0) return;
     uint8_t cmd = c->getData()[0];
 
+    // Callback içinde sadece hızlı GPIO işlemleri yapılıyor,
+    // uzun süren iş burada YAPILMAMALI (BLE stack'i bloklar).
     switch (cmd) {
       case CMD_RED_LED_ON:    digitalWrite(PIN_RED_LED, HIGH); break;
       case CMD_RED_LED_OFF:   digitalWrite(PIN_RED_LED, LOW);  break;
@@ -70,8 +82,51 @@ long readDistanceCm() {
   digitalWrite(PIN_TRIG, LOW);
 
   long duration = pulseIn(PIN_ECHO, HIGH, 30000); // 30ms timeout, ~5m menzil
-  if (duration == 0) return -1; // ping yankısız döndüyse
+  if (duration == 0) return -1; // yankı gelmedi
   return duration / 58; // us -> cm
+}
+
+// ---------------------------------------------------------------------------
+// Core 1: Sensör ölçüm task'ı
+// pulseIn'in 30ms'ye kadar süren blocking beklemesi bu çekirdekte izole kalır,
+// BLE stack (Core 0) hiç etkilenmez.
+// ---------------------------------------------------------------------------
+void sensorTask(void* param) {
+  for (;;) {
+    long d = readDistanceCm();
+    if (d >= 0) {
+      // Kuyruk doluysa bekleme (0 tick), eski ölçüm kaybolabilir; sorun değil.
+      xQueueSend(sensorQueue, &d, 0);
+    }
+    vTaskDelay(pdMS_TO_TICKS(SENSOR_PERIOD_MS));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Core 0: BLE notify task'ı
+// BLE stack ile aynı çekirdekte çalışır; kuyruktan gelen ölçümü
+// string olarak notify eder (Flutter tarafı "23" gibi string parse ediyor).
+// Ayrıca kopan bağlantı sonrası advertising'i yeniden başlatır.
+// ---------------------------------------------------------------------------
+void notifyTask(void* param) {
+  long d;
+  char buf[8];
+  for (;;) {
+    // 100ms timeout: veri gelmese de advertising flag'ini kontrol edebilelim
+    if (xQueueReceive(sensorQueue, &d, pdMS_TO_TICKS(100)) == pdTRUE) {
+      if (deviceConnected) {
+        snprintf(buf, sizeof(buf), "%ld", d);
+        pSensorChar->setValue((uint8_t*)buf, strlen(buf));
+        pSensorChar->notify();
+      }
+    }
+
+    if (needAdvertise) {
+      needAdvertise = false;
+      vTaskDelay(pdMS_TO_TICKS(300)); // stack'in toparlanması için kısa bekleme
+      BLEDevice::startAdvertising();
+    }
+  }
 }
 
 void setup() {
@@ -83,6 +138,10 @@ void setup() {
   pinMode(PIN_RELAY, OUTPUT);
   pinMode(PIN_TRIG, OUTPUT);
   pinMode(PIN_ECHO, INPUT);
+
+  // Not: Röle modülü low-trigger ise LOW = açık demektir;
+  // donanımda test edip gerekirse komut mantığını ters çevir.
+  digitalWrite(PIN_RELAY, HIGH);
 
   BLEDevice::init("ESP32-BLE");
   pServer = BLEDevice::createServer();
@@ -107,17 +166,16 @@ void setup() {
   BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->start();
+
+  // FreeRTOS task'ları: sensör Core 1'e, notify Core 0'a sabitlenir
+  sensorQueue = xQueueCreate(5, sizeof(long));
+  xTaskCreatePinnedToCore(sensorTask, "sensor", 2048, NULL, 1, NULL, 1); // Core 1
+  xTaskCreatePinnedToCore(notifyTask, "notify", 4096, NULL, 2, NULL, 0); // Core 0
+
+  Serial.println("BLE server hazir, advertising basladi.");
 }
 
 void loop() {
-  // Flutter tarafı mesafeyi string olarak parse ediyor ("23" gibi), byte değil
-  if (deviceConnected && millis() - lastSensorSend > 500) {
-    long distance = readDistanceCm();
-    if (distance >= 0) {
-      String payload = String(distance);
-      pSensorChar->setValue(payload.c_str());
-      pSensorChar->notify();
-    }
-    lastSensorSend = millis();
-  }
+  // Tüm iş task'larda; loop'u uyutuyoruz.
+  vTaskDelay(portMAX_DELAY);
 }
