@@ -3,17 +3,21 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'ble_device_model.dart';
 import 'package:flutter/foundation.dart';
 
-// Şu an için sadece tarama ve bağlanma sorumluluğu var.
-// LED/röle kontrolü ve sensör verisi ileride eklenecek.
+// ESP32 ile BLE üzerinden tarama, bağlanma, LED/röle komutu gönderme
+// ve mesafe sensörü verisini okuma sorumluluğu bu serviste toplanıyor.
 class BleService {
   final List<BleDeviceModel> _foundDevices = [];
   BluetoothDevice? _connectedDevice;
   BluetoothCharacteristic? _writeCharacteristic;
   Timer? _sensorPollTimer;
+  // disconnect() çağrıldığında true olur; connectionState listener'ının
+  // bunu beklenmedik kopma sanıp hata göstermesini önler.
+  bool _expectingDisconnect = false;
 
   final _devicesController = StreamController<List<BleDeviceModel>>.broadcast();
   final _connectionController = StreamController<bool>.broadcast();
   final _sensorController = StreamController<int>.broadcast();
+  final _errorController = StreamController<String>.broadcast();
 
   // Taranan cihaz listesi UI'a bu stream üzerinden akar
   Stream<List<BleDeviceModel>> get devicesStream => _devicesController.stream;
@@ -21,6 +25,8 @@ class BleService {
   Stream<bool> get connectionStream => _connectionController.stream;
   // ESP32'den notify ile gelen mesafe verisi (cm) bu stream üzerinden akar
   Stream<int> get sensorStream => _sensorController.stream;
+  // Kullanıcıya gösterilecek hata mesajları (örn. beklenmedik kopma) bu stream'den akar
+  Stream<String> get errorStream => _errorController.stream;
 
   bool get isConnected => _connectedDevice != null;
 
@@ -100,7 +106,14 @@ class BleService {
             _sensorPollTimer?.cancel();
             _sensorPollTimer = Timer.periodic(
               const Duration(milliseconds: 500),
-              (_) async {
+              (timer) async {
+                // Bağlantı koptuysa timer'ı hemen durdur; connectionState
+                // listener'ının bunu fark etmesini beklemek gereksiz
+                // "GATT Server is disconnected" hatalarına yol açıyordu.
+                if (!model.device.isConnected) {
+                  timer.cancel();
+                  return;
+                }
                 try {
                   final value = await c.read();
                   _handleSensorValue(value);
@@ -123,8 +136,14 @@ class BleService {
     // Cihaz beklenmedik şekilde koparsa (menzil dışı, pil vs.) durumu güncelle
     model.device.connectionState.listen((state) {
       if (state == BluetoothConnectionState.disconnected) {
+        final wasExpected = _expectingDisconnect;
+        _expectingDisconnect = false;
+        _sensorPollTimer?.cancel();
         _connectedDevice = null;
         _connectionController.add(false);
+        if (!wasExpected) {
+          _errorController.add('Bağlantı beklenmedik şekilde kesildi');
+        }
       }
     });
 
@@ -178,6 +197,7 @@ class BleService {
 
   // Kullanıcı manuel bağlantıyı keser
   Future<void> disconnect() async {
+    _expectingDisconnect = true;
     _sensorPollTimer?.cancel();
     _sensorPollTimer = null;
     await _connectedDevice?.disconnect();
@@ -191,5 +211,6 @@ class BleService {
     _devicesController.close();
     _connectionController.close();
     _sensorController.close();
+    _errorController.close();
   }
 }

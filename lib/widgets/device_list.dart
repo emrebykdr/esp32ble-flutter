@@ -6,11 +6,13 @@ import '../ble_device_model.dart';
 class DeviceList extends StatelessWidget {
   final List<BleDeviceModel> devices; // Bulunan cihazlar
   final Function(BleDeviceModel) onDeviceTap; // Listeden bir cihaza dokununca çağrılır
+  final bool isConnecting; // true iken taplar devre dışı, yükleniyor göstergesi çıkar
 
   const DeviceList({
     super.key,
     required this.devices,
     required this.onDeviceTap,
+    this.isConnecting = false,
   });
 
   @override
@@ -21,20 +23,34 @@ class DeviceList extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'BULUNAN CİHAZLAR',
-              style: TextStyle(
-                color: AppColors.textMuted,
-                fontSize: 11,
-                letterSpacing: 1.2,
-                fontWeight: FontWeight.w600,
-              ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'BULUNAN CİHAZLAR',
+                  style: TextStyle(
+                    color: AppColors.textMuted,
+                    fontSize: 11,
+                    letterSpacing: 1.2,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (isConnecting)
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.accent,
+                    ),
+                  ),
+              ],
             ),
             const SizedBox(height: 12),
             // Her cihaz için bir satır oluştur
             ...devices.map((device) => _DeviceTile(
                   device: device,
-                  onTap: () => onDeviceTap(device),
+                  onTap: isConnecting ? null : () => onDeviceTap(device),
                 )),
           ],
         ),
@@ -45,7 +61,7 @@ class DeviceList extends StatelessWidget {
 
 class _DeviceTile extends StatelessWidget {
   final BleDeviceModel device;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   const _DeviceTile({required this.device, required this.onTap});
 

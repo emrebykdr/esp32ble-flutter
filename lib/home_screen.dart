@@ -27,6 +27,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<BleDeviceModel> _devices = [];
   bool _isScanning = false;
+  bool _isConnecting = false;
   bool _isConnected = false;
   int? _distance;
   final List<int> _distanceHistory = [];
@@ -80,6 +81,14 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       });
     });
+
+    _bleService.errorStream.listen((message) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message)),
+        );
+      }
+    });
   }
 
   // Tarama butonuna basılınca çağrılır
@@ -101,8 +110,20 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Listeden cihaz seçilince bağlantı kurar
   Future<void> _connectToDevice(BleDeviceModel device) async {
-    await _bleService.connect(device);
-    setState(() => _connectedName = device.name);
+    setState(() => _isConnecting = true);
+    try {
+      await _bleService.connect(device);
+      setState(() => _connectedName = device.name);
+    } catch (e) {
+      debugPrint('Bağlantı hatası: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${device.name} cihazına bağlanılamadı')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isConnecting = false);
+    }
   }
 
   Future<void> _disconnect() async {
@@ -143,7 +164,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
               // Bulunan cihazlar listesi — cihaz varsa göster
               if (_devices.isNotEmpty)
-                DeviceList(devices: _devices, onDeviceTap: _connectToDevice),
+                DeviceList(
+                  devices: _devices,
+                  isConnecting: _isConnecting,
+                  onDeviceTap: _connectToDevice,
+                ),
 
               // Bağlı cihaz kartı — bağlıysa göster
               if (_isConnected) ...[
