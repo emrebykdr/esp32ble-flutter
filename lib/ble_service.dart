@@ -11,6 +11,12 @@ class BleService {
   BluetoothDevice? _connectedDevice;
   BluetoothCharacteristic? _writeCharacteristic;
   Timer? _sensorPollTimer;
+  // startScan()/connect() her çağrıldığında yeniden abone olunmadan önce
+  // öncekini iptal etmek için tutuluyor — aksi halde tekrar tekrar
+  // tarama/bağlanma yapıldıkça aynı olaylar birden fazla kez işlenir.
+  StreamSubscription<List<ScanResult>>? _scanResultsSubscription;
+  StreamSubscription<BluetoothConnectionState>? _connectionStateSubscription;
+  StreamSubscription<List<int>>? _lastValueSubscription;
   // disconnect() çağrıldığında true olur; connectionState listener'ının
   // bunu beklenmedik kopma sanıp hata göstermesini önler.
   bool _expectingDisconnect = false;
@@ -50,7 +56,8 @@ class BleService {
       webOptionalServices: [_serviceUuid],
     );
 
-    FlutterBluePlus.scanResults.listen((results) {
+    _scanResultsSubscription?.cancel();
+    _scanResultsSubscription = FlutterBluePlus.scanResults.listen((results) {
       for (ScanResult result in results) {
         final name = result.device.platformName;
         if (name.isEmpty) continue;
@@ -125,7 +132,8 @@ class BleService {
             );
           } else {
             await _enableNotifyWithRetry(c);
-            c.lastValueStream.listen(_handleSensorValue);
+            _lastValueSubscription?.cancel();
+            _lastValueSubscription = c.lastValueStream.listen(_handleSensorValue);
           }
         }
         debugPrint(
@@ -135,7 +143,8 @@ class BleService {
     }
 
     // Cihaz beklenmedik şekilde koparsa (menzil dışı, pil vs.) durumu güncelle
-    model.device.connectionState.listen((state) {
+    _connectionStateSubscription?.cancel();
+    _connectionStateSubscription = model.device.connectionState.listen((state) {
       if (state == BluetoothConnectionState.disconnected) {
         final wasExpected = _expectingDisconnect;
         _expectingDisconnect = false;
@@ -201,6 +210,8 @@ class BleService {
     _expectingDisconnect = true;
     _sensorPollTimer?.cancel();
     _sensorPollTimer = null;
+    _connectionStateSubscription?.cancel();
+    _lastValueSubscription?.cancel();
     await _connectedDevice?.disconnect();
     _connectedDevice = null;
     _connectionController.add(false);
@@ -209,6 +220,9 @@ class BleService {
   // Servis yok edilirken stream'leri kapat, aksi halde memory leak olur
   void dispose() {
     _sensorPollTimer?.cancel();
+    _scanResultsSubscription?.cancel();
+    _connectionStateSubscription?.cancel();
+    _lastValueSubscription?.cancel();
     _devicesController.close();
     _connectionController.close();
     _sensorController.close();
