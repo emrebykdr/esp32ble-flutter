@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -24,6 +25,9 @@ class _HomeScreenState extends State<HomeScreen> {
   final BleService _bleService = BleService();
 
   static const int _maxHistoryLength = 40;
+  // Bu süre boyunca yeni sensör okuması gelmezse veri "bayat" sayılır
+  // (ESP32 her ~500ms'de bir gönderiyor, 2sn ~4 kaçırılan tura karşılık gelir)
+  static const Duration _staleThreshold = Duration(seconds: 2);
 
   List<BleDeviceModel> _devices = [];
   bool _isScanning = false;
@@ -31,6 +35,9 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isConnected = false;
   int? _distance;
   final List<int> _distanceHistory = [];
+  DateTime? _lastSensorUpdate;
+  bool _isSensorStale = false;
+  Timer? _staleCheckTimer;
   String _connectedName = '';
 
   bool _redLed = false;
@@ -43,6 +50,13 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _requestPermissions();
     _listenStreams();
+    _staleCheckTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      if (_lastSensorUpdate == null || !_isConnected) return;
+      final isStale = DateTime.now().difference(_lastSensorUpdate!) > _staleThreshold;
+      if (isStale != _isSensorStale) {
+        setState(() => _isSensorStale = isStale);
+      }
+    });
   }
 
   // Android BLE için gerekli izinleri ister
@@ -69,6 +83,8 @@ class _HomeScreenState extends State<HomeScreen> {
           _relay = false;
           _distance = null;
           _distanceHistory.clear();
+          _lastSensorUpdate = null;
+          _isSensorStale = false;
         }
       });
     });
@@ -79,6 +95,8 @@ class _HomeScreenState extends State<HomeScreen> {
         if (_distanceHistory.length > _maxHistoryLength) {
           _distanceHistory.removeAt(0);
         }
+        _lastSensorUpdate = DateTime.now();
+        _isSensorStale = false;
       });
     });
 
@@ -139,6 +157,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _staleCheckTimer?.cancel();
     _bleService.dispose();
     super.dispose();
   }
@@ -209,7 +228,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   },
                 ),
                 const SizedBox(height: 8),
-                SensorCard(distanceCm: _distance, history: _distanceHistory),
+                SensorCard(
+                  distanceCm: _distance,
+                  history: _distanceHistory,
+                  isStale: _isSensorStale,
+                ),
               ],
             ],
           ),

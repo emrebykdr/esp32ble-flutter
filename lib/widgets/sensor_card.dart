@@ -7,19 +7,48 @@ import '../core/app_colors.dart';
 class SensorCard extends StatefulWidget {
   final int? distanceCm;
   final List<int> history;
+  final bool isStale; // true iken bir süredir yeni okuma gelmemiş demektir
 
   const SensorCard({
     super.key,
     required this.distanceCm,
     this.history = const [],
+    this.isStale = false,
   });
 
   @override
   State<SensorCard> createState() => _SensorCardState();
 }
 
-class _SensorCardState extends State<SensorCard> {
+class _SensorCardState extends State<SensorCard>
+    with SingleTickerProviderStateMixin {
   bool _showChart = false;
+  late final AnimationController _blinkController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 600),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.isStale) _blinkController.repeat(reverse: true);
+  }
+
+  @override
+  void didUpdateWidget(covariant SensorCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isStale && !oldWidget.isStale) {
+      _blinkController.repeat(reverse: true);
+    } else if (!widget.isStale && oldWidget.isStale) {
+      _blinkController.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _blinkController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -32,14 +61,25 @@ class _SensorCardState extends State<SensorCard> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text(
-                  'MESAFE SENSÖRÜ',
-                  style: TextStyle(
-                    color: AppColors.textMuted,
-                    fontSize: 11,
-                    letterSpacing: 1.2,
-                    fontWeight: FontWeight.w600,
-                  ),
+                Row(
+                  children: [
+                    const Text(
+                      'MESAFE SENSÖRÜ',
+                      style: TextStyle(
+                        color: AppColors.textMuted,
+                        fontSize: 11,
+                        letterSpacing: 1.2,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (widget.isStale) ...[
+                      const SizedBox(width: 6),
+                      FadeTransition(
+                        opacity: _blinkController,
+                        child: const _StaleDot(),
+                      ),
+                    ],
+                  ],
                 ),
                 // Grafik göster/gizle butonu — geçmiş veri yoksa devre dışı
                 IconButton(
@@ -80,6 +120,23 @@ class _SensorCardState extends State<SensorCard> {
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+// Sensörden bir süredir veri gelmediğini belirten küçük kırmızı nokta
+class _StaleDot extends StatelessWidget {
+  const _StaleDot();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 6,
+      height: 6,
+      decoration: const BoxDecoration(
+        shape: BoxShape.circle,
+        color: Colors.redAccent,
       ),
     );
   }
