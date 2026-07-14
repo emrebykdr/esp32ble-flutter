@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'ble_device_model.dart';
 import 'package:flutter/foundation.dart';
@@ -179,20 +180,20 @@ class BleService {
     }
   }
 
-  // LED ve Röle için byte komut tablosu — ESP32 tarafı bu byte'lara göre çalışacak
-  static const int redLedOn = 0x11;
-  static const int redLedOff = 0x10;
-  static const int greenLedOn = 0x21;
-  static const int greenLedOff = 0x20;
-  static const int blueLedOn = 0x31;
-  static const int blueLedOff = 0x30;
-  static const int relayOn = 0x41;
-  static const int relayOff = 0x40;
+  // LED ve Röle için metin komut tablosu — ESP32 tarafı bu string'lere göre çalışacak
+  static const String redLedOn = 'RED_ON';
+  static const String redLedOff = 'RED_OFF';
+  static const String greenLedOn = 'GREEN_ON';
+  static const String greenLedOff = 'GREEN_OFF';
+  static const String blueLedOn = 'BLUE_ON';
+  static const String blueLedOff = 'BLUE_OFF';
+  static const String relayOn = 'RELAY_ON';
+  static const String relayOff = 'RELAY_OFF';
 
-  // Verilen byte komutunu ESP32'ye gönderir
-  Future<void> sendCommand(int command) async {
+  // Verilen metin komutunu ESP32'ye gönderir
+  Future<void> sendCommand(String command) async {
     if (_writeCharacteristic == null) return;
-    await _writeCharacteristic!.write([command]);
+    await _writeCharacteristic!.write(utf8.encode(command));
   }
 
   // Kullanıcı manuel bağlantıyı keser

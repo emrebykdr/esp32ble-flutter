@@ -18,15 +18,16 @@
 #define PIN_TRIG      18
 #define PIN_ECHO      19
 
-// Flutter tarafındaki komut tablosuyla birebir eşleşmeli (ble_service.dart)
-#define CMD_RED_LED_OFF   0x10
-#define CMD_RED_LED_ON    0x11
-#define CMD_GREEN_LED_OFF 0x20
-#define CMD_GREEN_LED_ON  0x21
-#define CMD_BLUE_LED_OFF  0x30
-#define CMD_BLUE_LED_ON   0x31
-#define CMD_RELAY_OFF     0x40
-#define CMD_RELAY_ON      0x41
+// Flutter tarafındaki komut tablosuyla birebir eşleşmeli (ble_service.dart).
+// Metin tabanlı komutlar; okunabilirlik ve test kolaylığı için byte kodlar yerine tercih edildi.
+#define CMD_RED_LED_ON    "RED_ON"
+#define CMD_RED_LED_OFF   "RED_OFF"
+#define CMD_GREEN_LED_ON  "GREEN_ON"
+#define CMD_GREEN_LED_OFF "GREEN_OFF"
+#define CMD_BLUE_LED_ON   "BLUE_ON"
+#define CMD_BLUE_LED_OFF  "BLUE_OFF"
+#define CMD_RELAY_ON      "RELAY_ON"
+#define CMD_RELAY_OFF     "RELAY_OFF"
 
 // Sensör ölçüm periyodu (ms)
 #define SENSOR_PERIOD_MS  500
@@ -56,21 +57,24 @@ class ServerCallbacks : public BLEServerCallbacks {
 class CommandCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* c) override {
     if (c->getLength() == 0) return;
-    uint8_t cmd = c->getData()[0];
+
+    // Ham byte'ları metin komutuna çevir (örn. "RED_ON")
+    String cmd;
+    uint8_t* data = c->getData();
+    size_t len = c->getLength();
+    cmd.reserve(len);
+    for (size_t i = 0; i < len; i++) cmd += (char)data[i];
 
     // Callback içinde sadece hızlı GPIO işlemleri yapılıyor,
     // uzun süren iş burada YAPILMAMALI (BLE stack'i bloklar).
-    switch (cmd) {
-      case CMD_RED_LED_ON:    digitalWrite(PIN_RED_LED, HIGH); break;
-      case CMD_RED_LED_OFF:   digitalWrite(PIN_RED_LED, LOW);  break;
-      case CMD_GREEN_LED_ON:  digitalWrite(PIN_GREEN_LED, HIGH); break;
-      case CMD_GREEN_LED_OFF: digitalWrite(PIN_GREEN_LED, LOW);  break;
-      case CMD_BLUE_LED_ON:   digitalWrite(PIN_BLUE_LED, HIGH); break;
-      case CMD_BLUE_LED_OFF:  digitalWrite(PIN_BLUE_LED, LOW);  break;
-      case CMD_RELAY_ON:      digitalWrite(PIN_RELAY, HIGH); break;
-      case CMD_RELAY_OFF:     digitalWrite(PIN_RELAY, LOW);  break;
-      default: break;
-    }
+    if (cmd == CMD_RED_LED_ON)        digitalWrite(PIN_RED_LED, HIGH);
+    else if (cmd == CMD_RED_LED_OFF)  digitalWrite(PIN_RED_LED, LOW);
+    else if (cmd == CMD_GREEN_LED_ON) digitalWrite(PIN_GREEN_LED, HIGH);
+    else if (cmd == CMD_GREEN_LED_OFF) digitalWrite(PIN_GREEN_LED, LOW);
+    else if (cmd == CMD_BLUE_LED_ON)  digitalWrite(PIN_BLUE_LED, HIGH);
+    else if (cmd == CMD_BLUE_LED_OFF) digitalWrite(PIN_BLUE_LED, LOW);
+    else if (cmd == CMD_RELAY_ON)     digitalWrite(PIN_RELAY, HIGH);
+    else if (cmd == CMD_RELAY_OFF)    digitalWrite(PIN_RELAY, LOW);
   }
 };
 
