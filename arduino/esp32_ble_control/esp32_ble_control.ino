@@ -86,6 +86,7 @@ long readDistanceCm() {
   digitalWrite(PIN_TRIG, LOW);
 
   long duration = pulseIn(PIN_ECHO, HIGH, 30000); // 30ms timeout, ~5m menzil
+  Serial.print("RAW duration(us)="); Serial.println(duration); // TEŞHİS İÇİN GEÇİCİ
   if (duration == 0) return -1; // yankı gelmedi
   return duration / 58; // us -> cm
 }
@@ -98,10 +99,11 @@ long readDistanceCm() {
 void sensorTask(void* param) {
   for (;;) {
     long d = readDistanceCm();
-    if (d >= 0) {
-      // Kuyruk doluysa bekleme (0 tick), eski ölçüm kaybolabilir; sorun değil.
-      xQueueSend(sensorQueue, &d, 0);
-    }
+    // Başarısız ölçüm (-1) de gönderiliyor; aksi halde characteristic son
+    // başarılı değerde donup kalır ve web'deki polling bunu "güncel veri"
+    // sanır (okuma teknik olarak başarılı olur, içeriği eski kalır).
+    // Kuyruk doluysa bekleme (0 tick), eski ölçüm kaybolabilir; sorun değil.
+    xQueueSend(sensorQueue, &d, 0);
     vTaskDelay(pdMS_TO_TICKS(SENSOR_PERIOD_MS));
   }
 }

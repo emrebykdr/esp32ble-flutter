@@ -160,12 +160,14 @@ class BleService {
     _connectionController.add(true);
   }
 
-  // ESP32'den gelen ham byte'ı (string "23" gibi) int mesafeye çevirip stream'e ekler
+  // ESP32'den gelen ham byte'ı (string "23" gibi) int mesafeye çevirip stream'e ekler.
+  // ESP32 ölçüm alamazsa -1 gönderiyor; bunu geçerli veri sayıp ekranı
+  // güncellemiyoruz, aksi halde stale (bayat veri) göstergesi tetiklenmez.
   void _handleSensorValue(List<int> value) {
     if (value.isNotEmpty) {
       final str = String.fromCharCodes(value);
       final distance = int.tryParse(str);
-      if (distance != null) {
+      if (distance != null && distance >= 0) {
         _sensorController.add(distance);
       }
     }
