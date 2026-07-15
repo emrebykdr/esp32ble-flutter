@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:math';
+import 'dart:typed_data';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -7,8 +10,8 @@ import 'ble_device_model.dart';
 import 'core/app_colors.dart';
 import 'core/app_responsive.dart';
 
-// Ana ekran: cihaz tarama ve bağlanma akışını yönetir.
-// LED/röle kontrolü ve sensör verisi kısmı henüz eklenmedi.
+// Ana ekran: cihaz tarama, bağlanma, LED/röle kontrolü, sensör verisi ve
+// mesafe alarmı akışlarının tamamı burada yönetiliyor.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -34,6 +37,17 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isSensorStale = false;
   Timer? _staleCheckTimer;
   String _connectedName = '';
+
+  // Mesafe alarmı: belirlenen [min, max] aralığına girince yanıp sönen
+  // görsel uyarı + beep sesi tetiklenir
+  final AudioPlayer _alarmPlayer = AudioPlayer();
+  // late final: sadece ilk kullanımda bir kez üretilir, her rebuild'de tekrar hesaplanmaz
+  late final Uint8List _beepWav = _generateBeepWav();
+  bool _alarmEnabled = false;
+  int? _alarmMinCm;
+  int? _alarmMaxCm;
+  bool _alarmBlinkOn = false;
+  Timer? _alarmTimer;
 
   bool _redLed = false;
   bool _greenLed = false;
@@ -80,6 +94,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _distanceHistory.clear();
           _lastSensorUpdate = null;
           _isSensorStale = false;
+          _stopAlarm();
         }
       });
     });
@@ -92,6 +107,7 @@ class _HomeScreenState extends State<HomeScreen> {
         }
         _lastSensorUpdate = DateTime.now();
         _isSensorStale = false;
+        _evaluateAlarm(distance);
       });
     });
 
@@ -139,6 +155,46 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // Mesafe [min, max] aralığına girip girmediğini kontrol eder;
+  // girdiyse yanıp sönen görsel uyarıyı ve beep'i başlatır
+  void _evaluateAlarm(int distance) {
+    final validRange = _alarmMinCm != null &&
+        _alarmMaxCm != null &&
+        _alarmMinCm! <= _alarmMaxCm!;
+    final inRange = _alarmEnabled &&
+        validRange &&
+        distance >= _alarmMinCm! &&
+        distance <= _alarmMaxCm!;
+
+    // _alarmTimer == null kontrolü: aralıkta kaldığı sürece her okumada
+    // (yaklaşık 500ms'de bir) yeni bir timer başlatılmasını, yani beep'in
+    // olduğundan daha sık çalmasını engelliyor — timer zaten çalışıyorsa dokunma.
+    if (inRange && _alarmTimer == null) {
+      _playBeep();
+      _alarmBlinkOn = true;
+      _alarmTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+        if (!mounted) return;
+        setState(() => _alarmBlinkOn = !_alarmBlinkOn);
+        _playBeep();
+      });
+    } else if (!inRange) {
+      _stopAlarm();
+    }
+  }
+
+  // Alarm timer'ını durdurur ve görsel yanıp sönmeyi kapatır;
+  // mesafe aralıktan çıkınca, bağlantı kesilince veya alarm kapatılınca çağrılır
+  void _stopAlarm() {
+    _alarmTimer?.cancel();
+    _alarmTimer = null;
+    _alarmBlinkOn = false;
+  }
+
+  // Bellekte üretilen WAV byte'larını doğrudan çalar, disk/asset gerekmez
+  void _playBeep() {
+    _alarmPlayer.play(BytesSource(_beepWav));
+  }
+
   Future<void> _disconnect() async {
     // Bağlantı kesilmeden önce açık LED/röle varsa kapat, aksi halde donanımda yanık kalır
     if (_redLed) await _bleService.sendCommand(BleService.redLedOff);
@@ -153,6 +209,8 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _staleCheckTimer?.cancel();
+    _alarmTimer?.cancel();
+    _alarmPlayer.dispose();
     _bleService.dispose();
     super.dispose();
   }
@@ -227,6 +285,18 @@ class _HomeScreenState extends State<HomeScreen> {
                   distanceCm: _distance,
                   history: _distanceHistory,
                   isStale: _isSensorStale,
+                  alarmEnabled: _alarmEnabled,
+                  alarmMin: _alarmMinCm,
+                  alarmMax: _alarmMaxCm,
+                  alarmBlinking: _alarmBlinkOn,
+                  onAlarmSettingsChanged: (enabled, min, max) {
+                    setState(() {
+                      _alarmEnabled = enabled;
+                      _alarmMinCm = min;
+                      _alarmMaxCm = max;
+                      if (!enabled) _stopAlarm();
+                    });
+                  },
                 ),
               ],
             ],
@@ -738,10 +808,21 @@ class _SensorCard extends StatefulWidget {
   final List<int> history;
   final bool isStale; // true iken bir süredir yeni okuma gelmemiş demektir
 
+  final bool alarmEnabled;
+  final int? alarmMin;
+  final int? alarmMax;
+  final bool alarmBlinking; // true iken mesafe alarm aralığında, yanıp sönme aktif
+  final void Function(bool enabled, int? min, int? max) onAlarmSettingsChanged;
+
   const _SensorCard({
     required this.distanceCm,
     this.history = const [],
     this.isStale = false,
+    required this.alarmEnabled,
+    required this.alarmMin,
+    required this.alarmMax,
+    required this.alarmBlinking,
+    required this.onAlarmSettingsChanged,
   });
 
   @override
@@ -778,6 +859,82 @@ class _SensorCardState extends State<_SensorCard>
     super.dispose();
   }
 
+  // Alarm aralığını (min/max cm) ve açık/kapalı durumunu ayarlamak için diyalog
+  Future<void> _showAlarmDialog(BuildContext context) async {
+    final minController = TextEditingController(text: widget.alarmMin?.toString() ?? '');
+    final maxController = TextEditingController(text: widget.alarmMax?.toString() ?? '');
+    var enabled = widget.alarmEnabled;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            return AlertDialog(
+              backgroundColor: AppColors.card,
+              title: const Text('Mesafe Alarmı', style: TextStyle(color: AppColors.textPrimary)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      'Alarmı Etkinleştir',
+                      style: TextStyle(color: AppColors.textPrimary, fontSize: 14),
+                    ),
+                    value: enabled,
+                    activeThumbColor: Colors.amber,
+                    onChanged: (v) => setDialogState(() => enabled = v),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: minController,
+                          keyboardType: TextInputType.number,
+                          style: const TextStyle(color: AppColors.textPrimary),
+                          decoration: const InputDecoration(labelText: 'Min (cm)'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextField(
+                          controller: maxController,
+                          keyboardType: TextInputType.number,
+                          style: const TextStyle(color: AppColors.textPrimary),
+                          decoration: const InputDecoration(labelText: 'Max (cm)'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('İptal'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    widget.onAlarmSettingsChanged(
+                      enabled,
+                      int.tryParse(minController.text),
+                      int.tryParse(maxController.text),
+                    );
+                    Navigator.pop(dialogContext);
+                  },
+                  child: const Text('Kaydet'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -809,33 +966,69 @@ class _SensorCardState extends State<_SensorCard>
                     ],
                   ],
                 ),
-                // Grafik göster/gizle butonu — geçmiş veri yoksa devre dışı
-                IconButton(
-                  onPressed: widget.history.isEmpty
-                      ? null
-                      : () => setState(() => _showChart = !_showChart),
-                  icon: Icon(
-                    _showChart ? Icons.close : Icons.show_chart,
-                    size: 18,
-                    color: widget.history.isEmpty
-                        ? AppColors.textMuted
-                        : AppColors.accent,
-                  ),
-                  visualDensity: VisualDensity.compact,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
+                Row(
+                  children: [
+                    // Mesafe alarmı ayarları — açık/kapalı ve aralık burada belirlenir
+                    IconButton(
+                      onPressed: () => _showAlarmDialog(context),
+                      icon: Icon(
+                        widget.alarmEnabled
+                            ? Icons.notifications_active
+                            : Icons.notifications_none,
+                        size: 18,
+                        color: widget.alarmEnabled
+                            ? Colors.amber
+                            : AppColors.textMuted,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                    const SizedBox(width: 4),
+                    // Grafik göster/gizle butonu — geçmiş veri yoksa devre dışı
+                    IconButton(
+                      onPressed: widget.history.isEmpty
+                          ? null
+                          : () => setState(() => _showChart = !_showChart),
+                      icon: Icon(
+                        _showChart ? Icons.close : Icons.show_chart,
+                        size: 18,
+                        color: widget.history.isEmpty
+                            ? AppColors.textMuted
+                            : AppColors.accent,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ],
                 ),
               ],
             ),
             const SizedBox(height: 8),
-            Text(
-              widget.distanceCm != null ? '${widget.distanceCm} cm' : '--',
-              style: const TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: 28,
-                fontWeight: FontWeight.bold,
-              ),
+            Row(
+              children: [
+                Text(
+                  widget.distanceCm != null ? '${widget.distanceCm} cm' : '--',
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                if (widget.alarmBlinking) ...[
+                  const SizedBox(width: 10),
+                  const Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 24),
+                ],
+              ],
             ),
+            if (widget.alarmEnabled && widget.alarmMin != null && widget.alarmMax != null) ...[
+              const SizedBox(height: 2),
+              Text(
+                'Alarm: ${widget.alarmMin}-${widget.alarmMax} cm',
+                style: const TextStyle(color: AppColors.textMuted, fontSize: 11),
+              ),
+            ],
             if (_showChart) ...[
               const SizedBox(height: 12),
               SizedBox(
@@ -923,4 +1116,45 @@ class _TrendPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _TrendPainter oldDelegate) =>
       oldDelegate.values != values;
+}
+
+// Mesafe alarmı için kısa bir beep sesi (WAV, PCM16 mono) üretir.
+// Harici ses dosyası eklemekten kaçınmak için ton kod içinde sentezleniyor.
+Uint8List _generateBeepWav({
+  int freq = 1000,
+  int durationMs = 150,
+  int sampleRate = 8000,
+}) {
+  final numSamples = (sampleRate * durationMs / 1000).round();
+  final pcm = ByteData(numSamples * 2);
+  for (var i = 0; i < numSamples; i++) {
+    final t = i / sampleRate;
+    final sample = (sin(2 * pi * freq * t) * 32767 * 0.6).round();
+    pcm.setInt16(i * 2, sample, Endian.little);
+  }
+  final pcmBytes = pcm.buffer.asUint8List();
+
+  final header = BytesBuilder();
+  void writeString(String s) => header.add(s.codeUnits);
+  void writeUint32(int v) => header.add([v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff]);
+  void writeUint16(int v) => header.add([v & 0xff, (v >> 8) & 0xff]);
+
+  writeString('RIFF');
+  writeUint32(36 + pcmBytes.length);
+  writeString('WAVE');
+  writeString('fmt ');
+  writeUint32(16);
+  writeUint16(1); // PCM
+  writeUint16(1); // mono
+  writeUint32(sampleRate);
+  writeUint32(sampleRate * 2); // byte rate
+  writeUint16(2); // block align
+  writeUint16(16); // bits per sample
+  writeString('data');
+  writeUint32(pcmBytes.length);
+
+  final result = BytesBuilder();
+  result.add(header.toBytes());
+  result.add(pcmBytes);
+  return result.toBytes();
 }
