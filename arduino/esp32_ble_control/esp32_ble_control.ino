@@ -86,7 +86,6 @@ long readDistanceCm() {
   digitalWrite(PIN_TRIG, LOW);
 
   long duration = pulseIn(PIN_ECHO, HIGH, 30000); // 30ms timeout, ~5m menzil
-  Serial.print("RAW duration(us)="); Serial.println(duration); // TEŞHİS İÇİN GEÇİCİ
   if (duration == 0) return -1; // yankı gelmedi
   return duration / 58; // us -> cm
 }
