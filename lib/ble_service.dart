@@ -204,7 +204,12 @@ class BleService {
   // Verilen metin komutunu ESP32'ye gönderir
   Future<void> sendCommand(String command) async {
     if (_writeCharacteristic == null) return;
-    await _writeCharacteristic!.write(utf8.encode(command));
+    try {
+      await _writeCharacteristic!.write(utf8.encode(command));
+    } catch (e) {
+      debugPrint('sendCommand hatasi: $e');
+      _errorController.add('Komut gönderilemedi: $command');
+    }
   }
 
   // Kullanıcı manuel bağlantıyı keser

@@ -10,6 +10,9 @@ import 'ble_device_model.dart';
 import 'core/app_colors.dart';
 import 'core/app_responsive.dart';
 
+// LED'lerin manuel kontrol yerine otomatik bir desenle yanıp söndüğü efektler
+enum LedEffectMode { none, ambulance, trafficLight, disco, sos }
+
 // Ana ekran: cihaz tarama, bağlanma, LED/röle kontrolü, sensör verisi ve
 // mesafe alarmı akışlarının tamamı burada yönetiliyor.
 class HomeScreen extends StatefulWidget {
@@ -54,6 +57,13 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _blueLed = false;
   bool _relay = false;
 
+  // LED efekt motoru: aktifken manuel switch'ler kilitlenir, LED'ler
+  // desene göre otomatik yanıp söner
+  LedEffectMode _ledEffectMode = LedEffectMode.none;
+  int _effectStep = 0;
+  Timer? _effectTimer;
+  final Random _random = Random();
+
   @override
   void initState() {
     super.initState();
@@ -95,6 +105,10 @@ class _HomeScreenState extends State<HomeScreen> {
           _lastSensorUpdate = null;
           _isSensorStale = false;
           _stopAlarm();
+          _effectTimer?.cancel();
+          _effectTimer = null;
+          _ledEffectMode = LedEffectMode.none;
+          _effectStep = 0;
         }
       });
     });
@@ -190,12 +204,114 @@ class _HomeScreenState extends State<HomeScreen> {
     _alarmBlinkOn = false;
   }
 
+  // Seçilen efekt moduna geçer; mevcut adımı sıfırlayıp motoru başlatır/durdurur
+  void _setEffectMode(LedEffectMode mode) {
+    _effectTimer?.cancel();
+    _effectTimer = null;
+    _effectStep = 0;
+    setState(() => _ledEffectMode = mode);
+    if (mode == LedEffectMode.none) {
+      _applyLedState(red: false, green: false, blue: false);
+    } else {
+      _runEffectStep();
+    }
+  }
+
+  // Sadece değeri değişen LED'ler için komut gönderir, gereksiz BLE
+  // trafiğini önler; her adımda local switch state'ini de günceller
+  void _applyLedState({required bool red, required bool green, required bool blue}) {
+    if (red != _redLed) {
+      _bleService.sendCommand(red ? BleService.redLedOn : BleService.redLedOff);
+    }
+    if (green != _greenLed) {
+      _bleService.sendCommand(green ? BleService.greenLedOn : BleService.greenLedOff);
+    }
+    if (blue != _blueLed) {
+      _bleService.sendCommand(blue ? BleService.blueLedOn : BleService.blueLedOff);
+    }
+    if (mounted) {
+      setState(() {
+        _redLed = red;
+        _greenLed = green;
+        _blueLed = blue;
+      });
+    }
+  }
+
+  // Aktif efekt moduna göre bir sonraki adımın LED durumunu uygular ve
+  // kendi süresi kadar sonra bir sonraki adımı planlar
+  void _runEffectStep() {
+    switch (_ledEffectMode) {
+      case LedEffectMode.none:
+        return;
+      case LedEffectMode.ambulance:
+        // Kırmızı/mavi hızlı ardışık yanıp sönme (yeşil hep kapalı)
+        final redOn = _effectStep.isEven;
+        _applyLedState(red: redOn, green: false, blue: !redOn);
+        _effectStep = (_effectStep + 1) % 2;
+        _effectTimer = Timer(const Duration(milliseconds: 300), _runEffectStep);
+        break;
+      case LedEffectMode.trafficLight:
+        // Sarı LED donanımda yok; mavi sarı yerine kullanılıyor
+        const steps = [
+          (red: true, green: false, blue: false, ms: 3000),
+          (red: false, green: false, blue: true, ms: 1000),
+          (red: false, green: true, blue: false, ms: 3000),
+        ];
+        final step = steps[_effectStep];
+        _applyLedState(red: step.red, green: step.green, blue: step.blue);
+        _effectStep = (_effectStep + 1) % steps.length;
+        _effectTimer = Timer(Duration(milliseconds: step.ms), _runEffectStep);
+        break;
+      case LedEffectMode.disco:
+        // Her tikte rastgele bir renk kombinasyonu — sıralı adım gerekmiyor
+        const colors = [
+          (red: true, green: false, blue: false),
+          (red: false, green: true, blue: false),
+          (red: false, green: false, blue: true),
+          (red: true, green: false, blue: true),
+          (red: true, green: true, blue: false),
+          (red: false, green: true, blue: true),
+        ];
+        final pick = colors[_random.nextInt(colors.length)];
+        _applyLedState(red: pick.red, green: pick.green, blue: pick.blue);
+        _effectTimer = Timer(const Duration(milliseconds: 200), _runEffectStep);
+        break;
+      case LedEffectMode.sos:
+        // Mors alfabesiyle SOS: kısa-kısa-kısa (S), uzun-uzun-uzun (O), kısa-kısa-kısa (S)
+        const unit = 200; // "kısa" (nokta) süresi, "uzun" (çizgi) bunun 3 katı
+        const steps = [
+          (on: true, ms: unit), (on: false, ms: unit),
+          (on: true, ms: unit), (on: false, ms: unit),
+          (on: true, ms: unit), (on: false, ms: unit * 3), // S bitti
+          (on: true, ms: unit * 3), (on: false, ms: unit),
+          (on: true, ms: unit * 3), (on: false, ms: unit),
+          (on: true, ms: unit * 3), (on: false, ms: unit * 3), // O bitti
+          (on: true, ms: unit), (on: false, ms: unit),
+          (on: true, ms: unit), (on: false, ms: unit),
+          (on: true, ms: unit), (on: false, ms: unit * 7), // S bitti, tekrar öncesi bekleme
+        ];
+        final step = steps[_effectStep];
+        _applyLedState(red: step.on, green: false, blue: false);
+        _effectStep = (_effectStep + 1) % steps.length;
+        _effectTimer = Timer(Duration(milliseconds: step.ms), _runEffectStep);
+        break;
+    }
+  }
+
   // Bellekte üretilen WAV byte'larını doğrudan çalar, disk/asset gerekmez
   void _playBeep() {
     _alarmPlayer.play(BytesSource(_beepWav));
   }
 
   Future<void> _disconnect() async {
+    // Efekt çalışıyorsa önce durdur, aksi halde kapandıktan sonra da BLE'ye
+    // komut göndermeye çalışıp hataya düşer
+    _effectTimer?.cancel();
+    _effectTimer = null;
+    _ledEffectMode = LedEffectMode.none;
+    _effectStep = 0;
+
     // Bağlantı kesilmeden önce açık LED/röle varsa kapat, aksi halde donanımda yanık kalır
     if (_redLed) await _bleService.sendCommand(BleService.redLedOff);
     if (_greenLed) await _bleService.sendCommand(BleService.greenLedOff);
@@ -211,6 +327,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _staleCheckTimer?.cancel();
     _alarmTimer?.cancel();
     _alarmPlayer.dispose();
+    _effectTimer?.cancel();
     _bleService.dispose();
     super.dispose();
   }
@@ -255,6 +372,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   greenLed: _greenLed,
                   blueLed: _blueLed,
                   relay: _relay,
+                  effectMode: _ledEffectMode,
+                  onEffectModeChanged: _setEffectMode,
                   onRedChanged: (v) {
                     setState(() => _redLed = v);
                     _bleService.sendCommand(
@@ -695,25 +814,32 @@ class _LedRelayCard extends StatelessWidget {
   final bool greenLed;
   final bool blueLed;
   final bool relay;
+  final LedEffectMode effectMode;
 
   final Function(bool) onRedChanged;
   final Function(bool) onGreenChanged;
   final Function(bool) onBlueChanged;
   final Function(bool) onRelayChanged;
+  final void Function(LedEffectMode) onEffectModeChanged;
 
   const _LedRelayCard({
     required this.redLed,
     required this.greenLed,
     required this.blueLed,
     required this.relay,
+    required this.effectMode,
     required this.onRedChanged,
     required this.onGreenChanged,
     required this.onBlueChanged,
     required this.onRelayChanged,
+    required this.onEffectModeChanged,
   });
 
   @override
   Widget build(BuildContext context) {
+    // Bir efekt aktifken LED'ler otomatik yandığı için manuel switch'ler kilitleniyor
+    final effectActive = effectMode != LedEffectMode.none;
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -730,11 +856,107 @@ class _LedRelayCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 8),
-            _LedRow(label: 'Kırmızı LED', dotColor: Colors.red,   value: redLed,   onChanged: onRedChanged),
-            _LedRow(label: 'Yeşil LED',   dotColor: Colors.green, value: greenLed, onChanged: onGreenChanged),
-            _LedRow(label: 'Mavi LED',    dotColor: Colors.blue,  value: blueLed,  onChanged: onBlueChanged),
-            _LedRow(label: 'Röle',        dotColor: AppColors.textMuted, value: relay, onChanged: onRelayChanged),
+            _LedRow(
+              label: 'Kırmızı LED',
+              dotColor: Colors.red,
+              value: redLed,
+              onChanged: effectActive ? null : onRedChanged,
+            ),
+            _LedRow(
+              label: 'Yeşil LED',
+              dotColor: Colors.green,
+              value: greenLed,
+              onChanged: effectActive ? null : onGreenChanged,
+            ),
+            _LedRow(
+              label: 'Mavi LED',
+              dotColor: Colors.blue,
+              value: blueLed,
+              onChanged: effectActive ? null : onBlueChanged,
+            ),
+            _LedRow(label: 'Röle', dotColor: AppColors.textMuted, value: relay, onChanged: onRelayChanged),
+            const SizedBox(height: 12),
+            const Text(
+              'LED EFEKTİ',
+              style: TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 11,
+                letterSpacing: 1.2,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _EffectChip(
+                  label: 'Manuel',
+                  selected: effectMode == LedEffectMode.none,
+                  onTap: () => onEffectModeChanged(LedEffectMode.none),
+                ),
+                _EffectChip(
+                  label: '🚨 Ambulans',
+                  selected: effectMode == LedEffectMode.ambulance,
+                  onTap: () => onEffectModeChanged(LedEffectMode.ambulance),
+                ),
+                _EffectChip(
+                  label: '🚦 Trafik Işığı',
+                  selected: effectMode == LedEffectMode.trafficLight,
+                  onTap: () => onEffectModeChanged(LedEffectMode.trafficLight),
+                ),
+                _EffectChip(
+                  label: '🎉 Disko',
+                  selected: effectMode == LedEffectMode.disco,
+                  onTap: () => onEffectModeChanged(LedEffectMode.disco),
+                ),
+                _EffectChip(
+                  label: '🆘 SOS',
+                  selected: effectMode == LedEffectMode.sos,
+                  onTap: () => onEffectModeChanged(LedEffectMode.sos),
+                ),
+              ],
+            ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// LED efekt modu seçim çipi
+class _EffectChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _EffectChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.accent.withValues(alpha: 0.18) : AppColors.card,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: selected ? AppColors.accent : AppColors.cardBorder,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? AppColors.accent : AppColors.textMuted,
+            fontSize: 12,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+          ),
         ),
       ),
     );
@@ -746,7 +968,7 @@ class _LedRow extends StatelessWidget {
   final String label;
   final Color dotColor;
   final bool value;
-  final Function(bool) onChanged;
+  final Function(bool)? onChanged; // null iken switch kilitli (LED efekti aktif)
 
   const _LedRow({
     required this.label,
