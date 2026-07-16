@@ -13,6 +13,16 @@ import 'core/app_responsive.dart';
 // LED'lerin manuel kontrol yerine otomatik bir desenle yanıp söndüğü efektler
 enum LedEffectMode { none, ambulance, trafficLight, disco, sos }
 
+// Uygulamada yapılan bir işlemin (bağlantı, LED, alarm, hata vs.) kaydı.
+// Sadece oturum boyunca bellekte tutulur, uygulama kapanınca kaybolur.
+class LogEntry {
+  final DateTime time;
+  final String message;
+  final bool isError;
+
+  LogEntry(this.message, {this.isError = false}) : time = DateTime.now();
+}
+
 // Ana ekran: cihaz tarama, bağlanma, LED/röle kontrolü, sensör verisi ve
 // mesafe alarmı akışlarının tamamı burada yönetiliyor.
 class HomeScreen extends StatefulWidget {
@@ -63,6 +73,19 @@ class _HomeScreenState extends State<HomeScreen> {
   int _effectStep = 0;
   Timer? _effectTimer;
   final Random _random = Random();
+
+  // İşlem geçmişi — yeni kayıt başa eklenir, belirli bir sayıdan sonra eskiler atılır
+  static const int _maxLogEntries = 200;
+  final List<LogEntry> _logs = [];
+
+  // Yeni kayıt listenin başına eklenir (en yeni en üstte görünsün diye);
+  // sınırsız büyümesin diye _maxLogEntries üzerinde en eskiler atılır.
+  void _addLog(String message, {bool isError = false}) {
+    setState(() {
+      _logs.insert(0, LogEntry(message, isError: isError));
+      if (_logs.length > _maxLogEntries) _logs.removeLast();
+    });
+  }
 
   @override
   void initState() {
@@ -126,6 +149,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     _bleService.errorStream.listen((message) {
+      _addLog(message, isError: true);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(message)),
@@ -139,12 +163,15 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_isScanning) {
       await _bleService.stopScan();
       setState(() => _isScanning = false);
+      _addLog('Tarama durduruldu');
     } else {
       setState(() => _isScanning = true);
+      _addLog('Tarama başlatıldı');
       try {
         await _bleService.startScan();
       } catch (e) {
         debugPrint('Tarama hatası: $e');
+        _addLog('Tarama hatası: $e', isError: true);
       } finally {
         setState(() => _isScanning = false);
       }
@@ -157,8 +184,10 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       await _bleService.connect(device);
       setState(() => _connectedName = device.name);
+      _addLog('${device.name} cihazına bağlanıldı');
     } catch (e) {
       debugPrint('Bağlantı hatası: $e');
+      _addLog('${device.name} cihazına bağlanılamadı', isError: true);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('${device.name} cihazına bağlanılamadı')),
@@ -184,6 +213,7 @@ class _HomeScreenState extends State<HomeScreen> {
     // (yaklaşık 500ms'de bir) yeni bir timer başlatılmasını, yani beep'in
     // olduğundan daha sık çalmasını engelliyor — timer zaten çalışıyorsa dokunma.
     if (inRange && _alarmTimer == null) {
+      _addLog('Mesafe alarmı tetiklendi ($distance cm, $_alarmMinCm-$_alarmMaxCm aralığı)');
       _playBeep();
       _alarmBlinkOn = true;
       _alarmTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
@@ -199,6 +229,7 @@ class _HomeScreenState extends State<HomeScreen> {
   // Alarm timer'ını durdurur ve görsel yanıp sönmeyi kapatır;
   // mesafe aralıktan çıkınca, bağlantı kesilince veya alarm kapatılınca çağrılır
   void _stopAlarm() {
+    if (_alarmTimer != null) _addLog('Mesafe alarmı durdu');
     _alarmTimer?.cancel();
     _alarmTimer = null;
     _alarmBlinkOn = false;
@@ -210,6 +241,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _effectTimer = null;
     _effectStep = 0;
     setState(() => _ledEffectMode = mode);
+    _addLog('LED efekti: ${mode.name}');
     if (mode == LedEffectMode.none) {
       _applyLedState(red: false, green: false, blue: false);
     } else {
@@ -306,11 +338,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _disconnect() async {
     // Efekt çalışıyorsa önce durdur, aksi halde kapandıktan sonra da BLE'ye
-    // komut göndermeye çalışıp hataya düşer
-    _effectTimer?.cancel();
-    _effectTimer = null;
-    _ledEffectMode = LedEffectMode.none;
-    _effectStep = 0;
+    // komut göndermeye çalışıp hataya düşer. setState içinde yapıyoruz ki
+    // efekt çipleri ("Manuel" seçili) UI'da hemen güncellensin.
+    setState(() {
+      _effectTimer?.cancel();
+      _effectTimer = null;
+      _ledEffectMode = LedEffectMode.none;
+      _effectStep = 0;
+    });
 
     // Bağlantı kesilmeden önce açık LED/röle varsa kapat, aksi halde donanımda yanık kalır
     if (_redLed) await _bleService.sendCommand(BleService.redLedOff);
@@ -318,8 +353,10 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_blueLed) await _bleService.sendCommand(BleService.blueLedOff);
     if (_relay) await _bleService.sendCommand(BleService.relayOff);
 
+    final name = _connectedName;
     await _bleService.disconnect();
     setState(() => _connectedName = '');
+    _addLog('$name bağlantısı kesildi (manuel)');
   }
 
   @override
@@ -379,24 +416,28 @@ class _HomeScreenState extends State<HomeScreen> {
                     _bleService.sendCommand(
                       v ? BleService.redLedOn : BleService.redLedOff,
                     );
+                    _addLog('Kırmızı LED ${v ? "açıldı" : "kapatıldı"}');
                   },
                   onGreenChanged: (v) {
                     setState(() => _greenLed = v);
                     _bleService.sendCommand(
                       v ? BleService.greenLedOn : BleService.greenLedOff,
                     );
+                    _addLog('Yeşil LED ${v ? "açıldı" : "kapatıldı"}');
                   },
                   onBlueChanged: (v) {
                     setState(() => _blueLed = v);
                     _bleService.sendCommand(
                       v ? BleService.blueLedOn : BleService.blueLedOff,
                     );
+                    _addLog('Mavi LED ${v ? "açıldı" : "kapatıldı"}');
                   },
                   onRelayChanged: (v) {
                     setState(() => _relay = v);
                     _bleService.sendCommand(
                       v ? BleService.relayOn : BleService.relayOff,
                     );
+                    _addLog('Röle ${v ? "açıldı" : "kapatıldı"}');
                   },
                 ),
                 const SizedBox(height: 8),
@@ -415,6 +456,11 @@ class _HomeScreenState extends State<HomeScreen> {
                       _alarmMaxCm = max;
                       if (!enabled) _stopAlarm();
                     });
+                    _addLog(
+                      enabled
+                          ? 'Mesafe alarmı ayarlandı: $min-$max cm'
+                          : 'Mesafe alarmı kapatıldı',
+                    );
                   },
                 ),
               ],
@@ -447,14 +493,28 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ],
         ),
-        // Yeşil: bağlı, gri: bağlı değil
-        Container(
-          width: 12,
-          height: 12,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: _isConnected ? AppColors.accent : AppColors.textMuted,
-          ),
+        Row(
+          children: [
+            // İşlem geçmişi (log) ekranını açar. List.of ile kopya geçiyoruz
+            // ki log ekranı açıkken yeni kayıt eklenip _logs değişse bile
+            // orada gösterilen liste (kasıtlı olarak) sabit kalsın.
+            IconButton(
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => _LogScreen(logs: List.of(_logs))),
+              ),
+              icon: const Icon(Icons.history, color: AppColors.textMuted, size: 20),
+            ),
+            // Yeşil: bağlı, gri: bağlı değil
+            Container(
+              width: 12,
+              height: 12,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: _isConnected ? AppColors.accent : AppColors.textMuted,
+              ),
+            ),
+          ],
         ),
       ],
     );
@@ -1379,4 +1439,65 @@ Uint8List _generateBeepWav({
   result.add(header.toBytes());
   result.add(pcmBytes);
   return result.toBytes();
+}
+
+// ---------------------------------------------------------------------------
+// İşlem geçmişi ekranı — açılış anındaki log listesinin bir kopyasını gösterir
+// (canlı güncellenmez, yeni kayıtlar için ekranı tekrar açmak gerekir)
+// ---------------------------------------------------------------------------
+class _LogScreen extends StatelessWidget {
+  final List<LogEntry> logs;
+
+  const _LogScreen({required this.logs});
+
+  String _formatTime(DateTime t) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(t.hour)}:${two(t.minute)}:${two(t.second)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      appBar: AppBar(
+        backgroundColor: AppColors.background,
+        foregroundColor: AppColors.textPrimary,
+        title: const Text('İşlem Geçmişi'),
+      ),
+      body: logs.isEmpty
+          ? const Center(
+              child: Text(
+                'Henüz kayıt yok',
+                style: TextStyle(color: AppColors.textMuted),
+              ),
+            )
+          : ListView.separated(
+              padding: const EdgeInsets.all(16),
+              itemCount: logs.length,
+              separatorBuilder: (_, _) => const Divider(color: AppColors.cardBorder, height: 20),
+              itemBuilder: (context, i) {
+                final entry = logs[i];
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _formatTime(entry.time),
+                      style: const TextStyle(color: AppColors.textMuted, fontSize: 11),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        entry.message,
+                        style: TextStyle(
+                          color: entry.isError ? Colors.redAccent : AppColors.textPrimary,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+    );
+  }
 }
